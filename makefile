@@ -1,4 +1,4 @@
-#!/bin/make -f 
+#!/bin/make -f
 #
 
 ## base makefile
@@ -11,6 +11,6 @@ include telnet.mk
 ## DEPENDENCIES
 -include *.depend
 
-## Rebuild when makefile altered 
-# currently broken 
+## Rebuild when makefile altered
+# currently broken
 # $(ALL_OBJS) *.depend : makefile

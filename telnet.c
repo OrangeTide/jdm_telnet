@@ -9,7 +9,7 @@
  * RFC 1143 - The Q Method of Implementing TELNET Option Negotiation
  * RFC 1184 - Telnet Linemode Option
  * RFC 1572 - Telnet Environment Option
- * 
+ *
  * others?
  * RFC 1080
  * RFC 2066
@@ -17,6 +17,8 @@
  *
  * special characters to consider
  * 255 IAC
+ *
+ * commands that don't accept options
  * 244 IP
  * 245 AO
  * 246 AYT
@@ -59,7 +61,7 @@ enum telnet_state {
     TelnetStateText,
     TelnetStateIacIac,          /* IAC escape */
     TelnetStateIacCommand,      /* WILL WONT DO DONT */
-    TelnetStateIacOption,       /* TELOPT_xxx */ 
+    TelnetStateIacOption,       /* TELOPT_xxx */
 };
 
 struct telnet_event {
@@ -91,7 +93,7 @@ int telnet_begin(struct telnet_info *ts, size_t inbuf_len, const char *inbuf) {
     return 1;
 }
 
-/* get the next block of regular text from the telnet engine 
+/* get the next block of regular text from the telnet engine
  * for IAC IAC the call will be broken up into two parts.
  * this is because the input buffer is not modified.
  */
@@ -112,7 +114,7 @@ int telnet_gettext(struct telnet_info *ts, size_t *len, const char **ptr) {
                     ts->telnet_state=TelnetStateIacCommand;
                     break;
                 }
-        } 
+        }
         *len=current-ts->inbuf_current;
         ts->inbuf_current=current;
         return 1;
@@ -176,34 +178,56 @@ int telnet_end(struct telnet_info *ts) {
 void telnet_free(struct telnet_info *ts) {
 }
 
+/**************************** TEST & EXAMPLE CODE ****************************/
+
 /* USAGE:
- * size_t text_len;
- * char *text_ptr;
- * ts=telnet_create();
- * while(1) {
- *   len=read(fd, buf);
- *   telnet_begin(ts, len, buf);
- *   while(telnet_continue(ts)) {
- *     if(telnet_gettext(ts, &text_len, &text_ptr)) {
- *       process_text(text_len, text_ptr);
- *     }
- *     if(telnet_getcontrol(ts)) {
- *       respond_control(control_len, control_ptr);
- *     }
- *   }
- *   telnet_end(ts);
- * }
- *
- * IDEAS: combine telnet_end() and telnet_continue() ?
- * TODO: 
+ *  + todo - explain how to use it
+ * IDEAS:
+ *  + combine telnet_end() and telnet_continue() ?
+ * TODO:
  *   + handle control messages and responses in the struct
  *   + make the API very light weight
  *   + add ways to automate the building of control messages
  */
 
 int main() {
+    const struct {
+        int n;
+        char *b;
+    } test_data[] = {
+        { 6, "hello " },
+        { 6, "world\n" },
+        { 15, "this is a test\n" },
+    };
+    int i;
     struct telnet_info *ts;
+
     ts=telnet_create();
+    for(i=0;i<NR(test_data);i++) {
+        telnet_begin(ts, test_data[i].n, test_data[i].b);
+        while(telnet_continue(ts)) {
+            const char *text_ptr;
+            size_t text_len;
+            const char *ex;
+            size_t exlen;
+            unsigned char cmd, opt;
+
+            /* handle regular data */
+            if(telnet_gettext(ts, &text_len, &text_ptr)) {
+                /* Dump all normal text to stdout */
+                if(fwrite(text_ptr, 1, text_len, stdout)!=text_len) {
+                    perror("fwrite()");
+                }
+            }
+
+            /* handle control data */
+            if(telnet_getcontrol(ts, &cmd, &opt, &exlen, &ex)) {
+                /* log control messages to stderr */
+                fprintf(stderr, "\nControl message: %u %u\n", cmd, opt);
+            }
+        }
+        telnet_end(ts);
+    }
     telnet_free(ts);
     return 0;
 }

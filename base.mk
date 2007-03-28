@@ -23,7 +23,7 @@ clean-all : clean
 clean-backup :
 	$(RM) *~
 
-clean-depend : 
+clean-depend :
 	$(RM) *.depend
 
 depend :
@@ -32,4 +32,4 @@ install :
 
 ## RULES
 %.so : %.o
-	$(CC) $(CFLAGS) $(CPPFLAGS) -shared $(LDFLAGS) $(TARGET_ARCH) $^ $(LOADLIBES) $(LDLIBS) -o $@ 
+	$(CC) $(CFLAGS) $(CPPFLAGS) -shared $(LDFLAGS) $(TARGET_ARCH) $^ $(LOADLIBES) $(LDLIBS) -o $@

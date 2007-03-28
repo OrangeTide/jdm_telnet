@@ -21,7 +21,7 @@
 
 #define NR(x) (sizeof(x)/sizeof*(x))
 
-#ifndef NDEBUG 
+#ifndef NDEBUG
 /* initialize with junk */
 # define JUNKINIT(ptr, len) memset((ptr), 0x99, (len));
 #else
