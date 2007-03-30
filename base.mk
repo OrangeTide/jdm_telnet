@@ -1,7 +1,8 @@
 CPPFLAGS:=\
 	-I$(BUILD_BASE) \
 	-Wall \
-	-std=gnu99 \
+	-std=gnu89 \
+	-pedantic \
 	-D"VERSION=\"1.0p0\"" \
 	-D"BUILD_DATE=\"`date -u`\""
 CFLAGS:=-ggdb -pg -Wmissing-prototypes
