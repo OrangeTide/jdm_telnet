@@ -51,9 +51,10 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
-#ifndef NDEBUG
+
 #define TELCMDS
-#endif
+#define TELOPTS
+
 #include <arpa/telnet.h>
 #include "telnet.h"
 #include "macros.h"
@@ -208,20 +209,40 @@ again:
                 case DO:
                 case WONT:
                 case WILL:
+                    /* the following is for 3-byte IAC <cmd> <opt> codes */
                     ts->telnet_state=TelnetStateIacOption;
                     ts->command=tmp;
                     ts->inbuf_current++;
                     goto again;
+                case EOR: /* End of Record - RFC 885 */
+                    /* This only shows up if TELOPT_EOR was negotiated */
+                case ABORT: /* Abort - RFC 1184 */
+                    /* This only shows up if TELOPT_LINEMODE was negotiated */
+                    /* should be treated the same as IAC IP in most cases */
+                case SUSP: /* Suspend - RFC 1184 */
+                    /* This only shows up if TELOPT_LINEMODE was negotiated */
+                case xEOF: /* End of File - RFC 1184 */
+                    /* This only shows up if TELOPT_LINEMODE was negotiated */
+                    /* user sent an EOF "character"/signal */
                 case EC: /* Erase Character */
-                    /* TODO: do something with this */
                 case EL: /* Erase Line */
                 case GA: /* Go Ahead */
                 case AYT: /* Are You There */
                 case AO: /* Abort Output */
                 case IP: /* Interrupt Process */
-                case BREAK:
-                    /* a special key with a vague definition - RFC 854 */
-                    break;
+                case NOP: /* No Operations */
+                case BREAK: /* special key with a vague definition - RFC 854 */
+                    /* the following is for 2-byte IAC <cmd> codes */
+                    ts->telnet_state=TelnetStateIacOption;
+                    ts->command=tmp;
+                    ts->inbuf_current++;
+                    ts->telnet_state=TelnetStateText;
+                    ts->option=0;
+                    if(command) *command=ts->command;
+                    if(option) *option=0;
+                    if(extra_len) *extra_len=0;
+                    if(extra) *extra=0;
+                    return 1;
                 case DM: /* data mark */
                     /* marks the location in the stream a high priority
                      * telnet urgant OOB message was sent. 
@@ -230,35 +251,39 @@ again:
                      * if an IAC DM is received but no urgant messages are
                      * pending then the DM is ignored (treated as an IAC NOP)
                      */
-                    break;
-                case NOP: /* No Operations */
-                    break;
+                    /* the following is for 2-byte IAC <cmd> codes */
+                    ts->telnet_state=TelnetStateIacOption;
+                    ts->command=tmp;
+                    ts->inbuf_current++;
+                    ts->telnet_state=TelnetStateText;
+                    ts->option=0;
+                    if(command) *command=ts->command;
+                    if(option) *option=0;
+                    if(extra_len) *extra_len=0;
+                    if(extra) *extra=0;
+                    return 1;
                 case SB: /* Subnegotiation Begin */
                     /* format: IAC SB <option> ... IAC SE */
                     /* TODO: handle this */
-                    break;
+                    ts->command=SB;
+                    ts->telnet_state=TelnetStateSb;
+                    ts->extra_len=0;
+                    ts->inbuf_current++;
+                    goto again;
                 case SE: /* Subnegotiation End */ 
-                    /* TODO: this is an error in this state */
-                    break;
-                case EOR: /* End of Record - RFC 885 */
-                    /* This only shows up if TELOPT_EOR was negotiated */
-                    break;
-                case ABORT: /* Abort - RFC 1184 */
-                    /* This only shows up if TELOPT_LINEMODE was negotiated */
-                    /* should be treated the same as IAC IP in most cases */
-                    break;
-                case SUSP: /* Suspend - RFC 1184 */
-                    /* This only shows up if TELOPT_LINEMODE was negotiated */
-                    break;
-                case xEOF: /* End of File - RFC 1184 */
-                    /* This only shows up if TELOPT_LINEMODE was negotiated */
-                    /* user sent an EOF "character" */
-                    break;
+                    /* TODO: this is an error in this state. 
+                     * we sohuld ignore it */
+                    ts->inbuf_current++;
+                    return 0;
             }
             /* TODO: do something with unknown codes */
-            abort();
+#ifndef NDEBUG
+            fprintf(stderr, "unknown code %u\n", tmp);
+#endif
+            abort(); /* TODO: maybe treat this as 2 byte code? */
              
         case TelnetStateIacOption:
+            /* the following is for 3-byte IAC <cmd> <opt> codes */
             ts->telnet_state=TelnetStateText;
             ts->option=ts->inbuf[ts->inbuf_current++];
             if(command) *command=ts->command;
@@ -269,16 +294,49 @@ again:
         case TelnetStateSb:
             /* TODO: look for IAC */
             /* TODO: push data into buffer */
-            break;
+            tmp=(unsigned char)ts->inbuf[ts->inbuf_current++];
+            if(tmp==IAC) {
+                ts->telnet_state=TelnetStateSbIac;
+            } else {
+                if(ts->extra_len < ts->extra_max) {
+                    ts->extra[ts->extra_len++]=tmp;
+                }
+            }
+            goto again;
         case TelnetStateSbIac:
             /* TODO: look for IAC SE */
-            if(extra_len) *extra_len=ts->extra_len;
-            if(extra) *extra=ts->extra;
+            tmp=(unsigned char)ts->inbuf[ts->inbuf_current++];
+            if(tmp==IAC) {
+                /* IAC IAC escape */
+                if(ts->extra_len < ts->extra_max) {
+                    ts->extra[ts->extra_len++]=tmp;
+                }
+            } else if(tmp==SE) {
+                /* IAC SE */
+                ts->telnet_state=TelnetStateText;
+                if(command) *command=ts->command;
+                if(option) *option=ts->extra[0];
+                if(extra_len) *extra_len=ts->extra_len;
+                if(extra) *extra=ts->extra;
+                return 1;
+            } else {
+                /* something unknown. don't escape anything */
+                if(ts->extra_len < ts->extra_max) {
+                    ts->extra[ts->extra_len++]=(char)IAC;
+                }
+                if(ts->extra_len < ts->extra_max) {
+                    ts->extra[ts->extra_len++]=tmp;
+                }
+            }
+            goto again;
         case TelnetStateIacIac:
         case TelnetStateText:
             /* nothing to get */
             return 0;
     }
+#ifndef NDEBUG
+    fprintf(stderr, "fell through state %u\n", ts->telnet_state);
+#endif
     abort();
 }
 
@@ -324,8 +382,14 @@ int main() {
         { 9, "\33[0;1;32m" }, /* ESC [ 0 m  */
         { 2, "\377\377" }, /* IAC IAC */
         { 3, "\377\373\1" }, /* IAC WILL TELOPT_ECHO */
+        { 2, "\377\366" }, /* IAC AYT */
+        { 3, "\377\361\377" }, /* IAC NOP IAC */
+        { 2, "\376\42" }, /* DONT TELOPT_LINEMODE */
         { 15, "this is a test\n" },
+        { 2, "\377\377" }, /* IAC IAC */
         { 4, "\33[0m" }, /* ESC [ 0 m  */
+        { 2, "\377\377" }, /* IAC IAC */
+        { 8, "\377\372\42\1\1\377\360" }, /* IAC SB TELOPT_LINEMODE MODE EDIT IAC SE */
     };
     int i;
     struct telnet_info *ts;
@@ -358,7 +422,26 @@ int main() {
             /* handle control data */
             if(telnet_getcontrol(ts, &cmd, &opt, &exlen, &ex)) {
                 /* log control messages to stderr */
-                fprintf(stderr, "\nControl message: %u %u. extra=%d\n", cmd, opt, exlen);
+                fprintf(stderr, "\nControl message: IAC");
+                if(TELCMD_OK(cmd)) {
+                    fprintf(stderr, " %s", TELCMD(cmd));
+                } else {
+                    fprintf(stderr, " %u", cmd);
+                }
+                if(opt) {
+                    if(TELOPT_OK(opt)) {
+                        fprintf(stderr, " %s", TELOPT(opt));
+                    } else {
+                        fprintf(stderr, " %u", opt);
+                    }
+                }
+                if(ex && exlen>0) {
+#ifndef NDEBUG
+                        hexdump(exlen, ex);
+#endif
+                }
+                fprintf(stderr, "\n");
+
             }
         }
         telnet_end(ts);
