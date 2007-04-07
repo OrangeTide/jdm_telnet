@@ -1,4 +1,5 @@
-/* PUBLIC DOMAIN - March 20, 2007 - Jon Mayo */
+/* PUBLIC DOMAIN - March 20, 2007 - Jon Mayo 
+ * Last Update: April 6, 2007 */
 /* TODO:
  * + handle TCP Urgent/OOB state changes (like SYNCH)
  */
@@ -79,15 +80,15 @@ struct telnet_event {
 
 struct telnet_info {
     enum telnet_state telnet_state;
-    const char *inbuf;
+    const unsigned char *inbuf;
     size_t inbuf_len, inbuf_current;
     unsigned char command, option;
     size_t extra_len;
     size_t extra_max;
 #if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L)
-    char extra[];
+    unsigned char extra[];
 #else
-    char extra[0];
+    unsigned char extra[0]; /* hack to do flex arrays in C89 */
 #endif
 };
 
@@ -108,7 +109,7 @@ struct telnet_info *telnet_create(size_t extra_max) {
 int telnet_begin(struct telnet_info *ts, size_t inbuf_len, const char *inbuf) {
     assert(ts != NULL);
     assert(ts->inbuf == NULL);
-    ts->inbuf=inbuf;
+    ts->inbuf=(const unsigned char*)inbuf;
     ts->inbuf_len=inbuf_len;
     ts->inbuf_current=0;
     return 1;
@@ -140,7 +141,7 @@ int telnet_gettext(struct telnet_info *ts, size_t *len, const char **ptr) {
     switch(ts->telnet_state) {
         case TelnetStateIacIac:
         case TelnetStateText:
-            *ptr=ts->inbuf+ts->inbuf_current;
+            *ptr=(const char*)ts->inbuf+ts->inbuf_current;
             current=ts->inbuf_current;
             newlen=0;
             if(ts->telnet_state==TelnetStateIacIac) {
@@ -150,8 +151,7 @@ int telnet_gettext(struct telnet_info *ts, size_t *len, const char **ptr) {
                 newlen++;
             }
             for(;current<ts->inbuf_len;current++,newlen++) {
-                    if((unsigned char)ts->inbuf[current]==IAC) {
-                        /* TODO: handle IAC IAC here as well */
+                    if(ts->inbuf[current]==IAC) {
                         ts->telnet_state=TelnetStateIacCommand;
 #ifndef NDEBUG
                         fprintf(stderr, "command: ");
@@ -186,7 +186,7 @@ int telnet_gettext(struct telnet_info *ts, size_t *len, const char **ptr) {
  * extra_len - pointer to write the length of the extra data
  * extra - extra data buffer (for SB)
  */
-int telnet_getcontrol(struct telnet_info *ts, unsigned char *command, unsigned char *option, size_t *extra_len, const char **extra) {
+int telnet_getcontrol(struct telnet_info *ts, unsigned char *command, unsigned char *option, size_t *extra_len, const  unsigned char **extra) {
     unsigned char tmp;
 again:
     if(ts->inbuf_current>=ts->inbuf_len) {
@@ -233,10 +233,9 @@ again:
                 case NOP: /* No Operations */
                 case BREAK: /* special key with a vague definition - RFC 854 */
                     /* the following is for 2-byte IAC <cmd> codes */
-                    ts->telnet_state=TelnetStateIacOption;
                     ts->command=tmp;
                     ts->inbuf_current++;
-                    ts->telnet_state=TelnetStateText;
+                    ts->telnet_state=TelnetStateText; /* go back to text */
                     ts->option=0;
                     if(command) *command=ts->command;
                     if(option) *option=0;
@@ -252,10 +251,9 @@ again:
                      * pending then the DM is ignored (treated as an IAC NOP)
                      */
                     /* the following is for 2-byte IAC <cmd> codes */
-                    ts->telnet_state=TelnetStateIacOption;
                     ts->command=tmp;
                     ts->inbuf_current++;
-                    ts->telnet_state=TelnetStateText;
+                    ts->telnet_state=TelnetStateText; /* go back to text */
                     ts->option=0;
                     if(command) *command=ts->command;
                     if(option) *option=0;
@@ -264,24 +262,34 @@ again:
                     return 1;
                 case SB: /* Subnegotiation Begin */
                     /* format: IAC SB <option> ... IAC SE */
-                    /* TODO: handle this */
                     ts->command=SB;
                     ts->telnet_state=TelnetStateSb;
                     ts->extra_len=0;
                     ts->inbuf_current++;
                     goto again;
                 case SE: /* Subnegotiation End */ 
-                    /* TODO: this is an error in this state. 
-                     * we sohuld ignore it */
-                    ts->inbuf_current++;
-                    return 0;
-            }
-            /* TODO: do something with unknown codes */
+                    /* this is an error in this state. we ignore it */
+                    ts->telnet_state=TelnetStateText;
+                    ts->inbuf_current++; /* swallow the sequence code */
 #ifndef NDEBUG
-            fprintf(stderr, "unknown code %u\n", tmp);
+                    fprintf(stderr, "Found IAC SE in outside of SB stream, ignoring it.\n");
 #endif
-            abort(); /* TODO: maybe treat this as 2 byte code? */
-             
+                    goto again;
+                default: /* treat anything we don't know as a 2 byte code */
+                    /* the following is for 2-byte IAC <cmd> codes */
+#ifndef NDEBUG
+                    fprintf(stderr, "unknown code %u\n", tmp);
+#endif
+                    ts->command=tmp;
+                    ts->inbuf_current++;
+                    ts->telnet_state=TelnetStateText; /* go back to text */
+                    ts->option=0;
+                    if(command) *command=ts->command;
+                    if(option) *option=0;
+                    if(extra_len) *extra_len=0;
+                    if(extra) *extra=0;
+                    return 1;
+            }
         case TelnetStateIacOption:
             /* the following is for 3-byte IAC <cmd> <opt> codes */
             ts->telnet_state=TelnetStateText;
@@ -292,12 +300,12 @@ again:
             if(extra) *extra=0;
             return 1;
         case TelnetStateSb:
-            /* TODO: look for IAC */
-            /* TODO: push data into buffer */
             tmp=(unsigned char)ts->inbuf[ts->inbuf_current++];
             if(tmp==IAC) {
+                /* found IAC */
                 ts->telnet_state=TelnetStateSbIac;
             } else {
+                /* append data to buffer */
                 if(ts->extra_len < ts->extra_max) {
                     ts->extra[ts->extra_len++]=tmp;
                 }
@@ -307,12 +315,12 @@ again:
             /* TODO: look for IAC SE */
             tmp=(unsigned char)ts->inbuf[ts->inbuf_current++];
             if(tmp==IAC) {
-                /* IAC IAC escape */
+                /* IAC IAC escape in SB sequence */
                 if(ts->extra_len < ts->extra_max) {
                     ts->extra[ts->extra_len++]=tmp;
                 }
             } else if(tmp==SE) {
-                /* IAC SE */
+                /* IAC SE terminating SB sequence */
                 ts->telnet_state=TelnetStateText;
                 if(command) *command=ts->command;
                 if(option) *option=ts->extra[0];
@@ -322,7 +330,7 @@ again:
             } else {
                 /* something unknown. don't escape anything */
                 if(ts->extra_len < ts->extra_max) {
-                    ts->extra[ts->extra_len++]=(char)IAC;
+                    ts->extra[ts->extra_len++]=IAC;
                 }
                 if(ts->extra_len < ts->extra_max) {
                     ts->extra[ts->extra_len++]=tmp;
@@ -347,28 +355,39 @@ int telnet_continue(struct telnet_info *ts) {
 
 /* finishes an update cycle. the buffer passed as telnet_begin is no longer
  * referenced after this function.
+ * return 0 if the buffer still had data in it (unconsumed data error)
+ * return 1 on success
  */
 int telnet_end(struct telnet_info *ts) {
-    /* TODO: check that the buffer was completely consumed */
+    int result=1;
+
+    /* check that the buffer was completely consumed */
+    if(ts->inbuf_current<ts->inbuf_len) {
+#ifndef NDEBUG
+        fprintf(stderr, "Unconsumed data!\n");
+#endif
+        result=0;
+    }
 
     ts->inbuf=0;
     ts->inbuf_len=0;
-    return 1;
+    return result;
 }
 
 /* releases the telnet state */
 void telnet_free(struct telnet_info *ts) {
+    free(ts);
 }
 
 /**************************** TEST & EXAMPLE CODE ****************************/
-
+/* #define UNIT_TEST */
+#ifdef UNIT_TEST
 /* USAGE:
  *  + TODO - explain how to use it
  * IDEAS:
  *  + combine telnet_end() and telnet_continue() ?
  * TODO:
- *   + handle control messages and responses in the struct
- *   + make the API very light weight
+ *   + handle control messages and responses in the struct (an NVT driver?)
  *   + add ways to automate the building of control messages
  */
 
@@ -382,14 +401,16 @@ int main() {
         { 9, "\33[0;1;32m" }, /* ESC [ 0 m  */
         { 2, "\377\377" }, /* IAC IAC */
         { 3, "\377\373\1" }, /* IAC WILL TELOPT_ECHO */
-        { 2, "\377\366" }, /* IAC AYT */
+        { 12, "\377\364\377\365\377\366\377\367\377\370\377\371" }, /* IAC IP IAC AO IAC AYT IAC EC IAC EL IAC GA */
         { 3, "\377\361\377" }, /* IAC NOP IAC */
         { 2, "\376\42" }, /* DONT TELOPT_LINEMODE */
         { 15, "this is a test\n" },
         { 2, "\377\377" }, /* IAC IAC */
         { 4, "\33[0m" }, /* ESC [ 0 m  */
         { 2, "\377\377" }, /* IAC IAC */
-        { 8, "\377\372\42\1\1\377\360" }, /* IAC SB TELOPT_LINEMODE MODE EDIT IAC SE */
+        { 4, "\377\372\42\1" }, /* IAC SB LINEMODE MODE */
+        { 3, "\1\377\360" }, /* EDIT IAC SE */
+        { 4, "y\377\360x" }, /* y IAC SE x */
     };
     int i;
     struct telnet_info *ts;
@@ -400,7 +421,7 @@ int main() {
         while(telnet_continue(ts)) {
             const char *text_ptr;
             size_t text_len;
-            const char *ex;
+            const unsigned char *ex;
             size_t exlen;
             unsigned char cmd, opt;
             /* TODO: call telnet_getXXX in a loop until 0 */
@@ -423,7 +444,7 @@ int main() {
             if(telnet_getcontrol(ts, &cmd, &opt, &exlen, &ex)) {
                 /* log control messages to stderr */
                 fprintf(stderr, "\nControl message: IAC");
-                if(TELCMD_OK(cmd)) {
+                if(TELCMD_OK(cmd)) { /* ignore the warning on this line */
                     fprintf(stderr, " %s", TELCMD(cmd));
                 } else {
                     fprintf(stderr, " %u", cmd);
@@ -450,3 +471,4 @@ int main() {
     fputc('\n', stdout);
     return 0;
 }
+#endif
