@@ -1,0 +1,6 @@
+language: c
+dist: xenial
+script:
+  - make all
+  - ./test_telnet
+  - make clean-all
