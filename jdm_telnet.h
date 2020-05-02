@@ -1,10 +1,13 @@
 /* PUBLIC DOMAIN - March 20, 2007 - Jon Mayo
- * Last Update: May 1, 2020 */
-/* TODO:
+ * Last Update: May 1, 2020
+ */
+/* USAGE:
+ * ...TODO...
+ */
+/* BUGS & TODO:
  * + handle TCP Urgent/OOB state changes (like SYNCH)
  */
-#define NDEBUG
-/* References:
+/* References & Further Reading:
  * RFC 854 - Telnet Protocol Specification
  * RFC 855 - Telnet Option Specification
  * RFC 857 - Telnet Echo Option
@@ -49,6 +52,21 @@
  * http://www.ics.uci.edu/~rohit/IEEE-L7-v2.html
  * http://www.garlic.com/~lynn/rfcietff.htm
  */
+#ifndef JDM_TELNET_H_
+#define JDM_TELNET_H_
+#include <stddef.h>
+
+struct telnet_info;
+struct telnet_info *telnet_create(size_t extra_max);
+int telnet_begin(struct telnet_info *ts, size_t inbuf_len, const char *inbuf);
+int telnet_gettext(struct telnet_info *ts, size_t *len, const char **ptr);
+int telnet_getcontrol(struct telnet_info *ts, unsigned char *command, unsigned char *option, size_t *extra_len, const  unsigned char **extra);
+int telnet_continue(struct telnet_info *ts);
+int telnet_end(struct telnet_info *ts);
+void telnet_free(struct telnet_info *ts);
+
+#ifdef JDM_TELNET_IMPLEMENTATION
+#define NDEBUG
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,7 +75,6 @@
 #define TELOPTS
 
 #include <arpa/telnet.h>
-#include "telnet.h"
 
 enum telnet_event_type {
     TelnetEventText,
@@ -243,9 +260,9 @@ again:
                     return 1;
                 case DM: /* data mark */
                     /* marks the location in the stream a high priority
-                     * telnet urgant OOB message was sent. 
+                     * telnet urgant OOB message was sent.
                      * normally all unprocessed data is discarded from the
-                     * point of the urgant message to the DM. 
+                     * point of the urgant message to the DM.
                      * if an IAC DM is received but no urgant messages are
                      * pending then the DM is ignored (treated as an IAC NOP)
                      */
@@ -266,7 +283,7 @@ again:
                     ts->extra_len=0;
                     ts->inbuf_current++;
                     goto again;
-                case SE: /* Subnegotiation End */ 
+                case SE: /* Subnegotiation End */
                     /* this is an error in this state. we ignore it */
                     ts->telnet_state=TelnetStateText;
                     ts->inbuf_current++; /* swallow the sequence code */
@@ -377,97 +394,5 @@ int telnet_end(struct telnet_info *ts) {
 void telnet_free(struct telnet_info *ts) {
     free(ts);
 }
-
-/**************************** TEST & EXAMPLE CODE ****************************/
-/* #define UNIT_TEST */
-#ifdef UNIT_TEST
-/* USAGE:
- *  + TODO - explain how to use it
- * IDEAS:
- *  + combine telnet_end() and telnet_continue() ?
- * TODO:
- *   + handle control messages and responses in the struct (an NVT driver?)
- *   + add ways to automate the building of control messages
- */
-
-int main() {
-    const struct {
-        int n;
-        char *b;
-    } test_data[] = {
-        { 6, "hello " },
-        { 6, "world\n" },
-        { 9, "\33[0;1;32m" }, /* ESC [ 0 m  */
-        { 2, "\377\377" }, /* IAC IAC */
-        { 3, "\377\373\1" }, /* IAC WILL TELOPT_ECHO */
-        { 12, "\377\364\377\365\377\366\377\367\377\370\377\371" }, /* IAC IP IAC AO IAC AYT IAC EC IAC EL IAC GA */
-        { 3, "\377\361\377" }, /* IAC NOP IAC */
-        { 2, "\376\42" }, /* DONT TELOPT_LINEMODE */
-        { 15, "this is a test\n" },
-        { 2, "\377\377" }, /* IAC IAC */
-        { 4, "\33[0m" }, /* ESC [ 0 m  */
-        { 2, "\377\377" }, /* IAC IAC */
-        { 4, "\377\372\42\1" }, /* IAC SB LINEMODE MODE */
-        { 3, "\1\377\360" }, /* EDIT IAC SE */
-        { 4, "y\377\360x" }, /* y IAC SE x */
-    };
-    int i;
-    struct telnet_info *ts;
-
-    ts=telnet_create(0);
-    for(i=0;i<sizeof(test_data)/sizeof(*test_data);i++) {
-        telnet_begin(ts, test_data[i].n, test_data[i].b);
-        while(telnet_continue(ts)) {
-            const char *text_ptr;
-            size_t text_len;
-            const unsigned char *ex;
-            size_t exlen;
-            unsigned char cmd, opt;
-            /* TODO: call telnet_getXXX in a loop until 0 */
-            /* handle regular data */
-            if(telnet_gettext(ts, &text_len, &text_ptr)) {
-                /* Dump all normal text to stdout */
-#ifndef NDEBUG
-                fprintf(stderr, "text_len=%d\n", text_len);
-#endif
-                if(fwrite(text_ptr, 1, text_len, stdout)!=text_len) {
-                    perror("fwrite()");
-                }
-#ifndef NDEBUG
-                fputc('(', stdout);
-                fputc(')', stdout);
-#endif
-            }
-
-            /* handle control data */
-            if(telnet_getcontrol(ts, &cmd, &opt, &exlen, &ex)) {
-                /* log control messages to stderr */
-                fprintf(stderr, "\nControl message: IAC");
-                if(TELCMD_OK(cmd)) { /* ignore the warning on this line */
-                    fprintf(stderr, " %s", TELCMD(cmd));
-                } else {
-                    fprintf(stderr, " %u", cmd);
-                }
-                if(opt) {
-                    if(TELOPT_OK(opt)) {
-                        fprintf(stderr, " %s", TELOPT(opt));
-                    } else {
-                        fprintf(stderr, " %u", opt);
-                    }
-                }
-                if(ex && exlen>0) {
-#ifndef NDEBUG
-                        hexdump(exlen, ex);
-#endif
-                }
-                fprintf(stderr, "\n");
-
-            }
-        }
-        telnet_end(ts);
-    }
-    telnet_free(ts);
-    fputc('\n', stdout);
-    return 0;
-}
-#endif
+#endif /* JDM_TELNET_IMPLEMENTATION */
+#endif /* JDM_TELNET_H_ */

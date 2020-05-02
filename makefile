@@ -1,16 +1,11 @@
-#!/bin/make -f
-#
-
-## base makefile
-BUILD_BASE:=.
-include base.mk
-
-## PROJECTS
-include telnet.mk
-
-## DEPENDENCIES
--include *.depend
-
-## Rebuild when makefile altered
-# currently broken
-# $(ALL_OBJS) *.depend : makefile
+CFLAGS := -Wall -W -Os -MMD
+E := test_telnet
+S := test_telnet.c
+O := $(S:.c=.o)
+all :: $E
+clean :: ; $(RM) $E $O
+$E : $O
+##
+DEPS := $(wildcard *.d)
+clean-all : clean ; $(RM) $(DEPS)
+include $(DEPS)
