@@ -1,5 +1,5 @@
-/* PUBLIC DOMAIN - March 20, 2007 - Jon Mayo 
- * Last Update: April 6, 2007 */
+/* PUBLIC DOMAIN - March 20, 2007 - Jon Mayo
+ * Last Update: May 1, 2020 */
 /* TODO:
  * + handle TCP Urgent/OOB state changes (like SYNCH)
  */
@@ -58,7 +58,6 @@
 
 #include <arpa/telnet.h>
 #include "telnet.h"
-#include "macros.h"
 
 enum telnet_event_type {
     TelnetEventText,
@@ -416,7 +415,7 @@ int main() {
     struct telnet_info *ts;
 
     ts=telnet_create(0);
-    for(i=0;i<NR(test_data);i++) {
+    for(i=0;i<sizeof(test_data)/sizeof(*test_data);i++) {
         telnet_begin(ts, test_data[i].n, test_data[i].b);
         while(telnet_continue(ts)) {
             const char *text_ptr;
