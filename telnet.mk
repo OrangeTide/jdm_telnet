@@ -4,7 +4,7 @@
 #
 
 TELNET_EXEC:=telnet
-TELNET_SRCS:=telnet.c nvt.c
+TELNET_SRCS:=telnet.c
 TELNET_OBJS:=$(TELNET_SRCS:.c=.o)
 
 ALL_SRCS+=$(TELNET_SRCS)
