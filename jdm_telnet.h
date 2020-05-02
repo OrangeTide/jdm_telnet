@@ -2,10 +2,152 @@
  * Last Update: May 1, 2020
  */
 /* USAGE:
- * ...TODO...
+ *
+ * Define JDM_TELNET_IMPLEMENTATION in exactly one source file.
+ * Optionally define JDM_TELNET_DEBUG for spammy debug prints.
+ * Include header in any number of source files.
+ *
+ * 1. telnet_create() to allocate the state handle.
+ * 2. acquire data from your network libraries (read(), recv())
+ * 3. telnet_begin() to point to the current working buffer
+ * 4. telnet_continue() to check if data is left in the working buffer.
+ * 5. telnet_gettext() to get normal text from the stream.
+ * 6. telnet_getcontrol() to get WILL/WONT/DO/DONT/SB options and sub-option data.
+ * 7. telnet_end() to stop pointing to the working buffer.
+ * 8. when complete, free data with telnet_free()
+ *
  */
 /* BUGS & TODO:
  * + handle TCP Urgent/OOB state changes (like SYNCH)
+ */
+/* EXAMPLE CODE:
+ * #define JDM_TELNET_IMPLEMENTATION
+ * // #define JDM_TELNET_DEBUG
+ * #include "jdm_telnet.h"
+ *
+ * #include <stdlib.h>
+ *
+ * #include <arpa/inet.h>
+ * #include <sys/select.h>
+ * #include <sys/types.h>
+ * #include <sys/socket.h>
+ * #include <unistd.h>
+ *
+ * struct client {
+ *     int fd; // 0 means client is not valid / unused
+ *     struct telnet_info *ts;
+ * };
+ *
+ * static struct client *clients;
+ * static int max_clients = 400;
+ *
+ * int main()
+ * {
+ *     int e;
+ *     int port = 3000;
+ *
+ *     // initialize clients
+ *     clients = calloc(max_clients, sizeof(*clients));
+ *
+ *     // setup server's listen socket
+ *     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+ *     if (server_fd < 0)
+ *         return perror("socket()"), 1;
+ *     struct sockaddr_in listenaddr = {
+ *         .sin_addr.s_addr = INADDR_ANY,
+ *         .sin_port = htons(port),
+ *     };
+ *     e = bind(server_fd, (struct sockaddr*)&listenaddr, sizeof(listenaddr));
+ *     if (e)
+ *         return perror("bind()"), 1;
+ *     listen(server_fd, 6);
+ *     printf("Listening on *:%u\n", port);
+ *
+ *     // server's listen loop
+ *     int maxfd;
+ *     fd_set rfds;
+ *     int i;
+ *
+ *     while (1) {
+ *         // initialize activate clients
+ *         FD_ZERO(&rfds);
+ *         maxfd = server_fd;
+ *         for (i = 0; i < max_clients; i++) {
+ *             if (!clients[i].fd)
+ *                 continue; // ignore unused clients
+ *             FD_SET(i, &rfds);
+ *             if (i > maxfd)
+ *                 maxfd = i;
+ *         }
+ *         FD_SET(server_fd, &rfds);
+ *
+ *         // wait for server activity
+ *         e = select(maxfd + 1, &rfds, NULL, NULL, NULL);
+ *         if (e < 0)
+ *             perror("select()");
+ *         if (FD_ISSET(server_fd, &rfds)) { // accept new connection...
+ *             struct sockaddr_in addr;
+ *             socklen_t len = sizeof(addr);
+ *             int newfd = accept(server_fd, (struct sockaddr*)&addr, &len);
+ *
+ *             if (newfd < 0) {
+ *                 perror("accept");
+ *             } else if (newfd >= max_clients) {
+ *                 close(newfd);
+ *                 fprintf(stderr, "ignored connection - too many clients!\n");
+ *             } else {
+ *                 struct client *cl = &clients[newfd];
+ *                 cl->ts = telnet_create(80);
+ *                 cl->fd = newfd;
+ *                 printf("[%d] new connection\n", newfd);
+ *             }
+ *         } else { // process input from a client connection
+ *             char buf[128];
+ *             ssize_t buf_len;
+ *             for (i = 0; i < max_clients; i++) {
+ *                 struct client *cl = &clients[i];
+ *
+ *                 if (cl->fd <= 0)
+ *                     continue; // not a valid client
+ *
+ *                 if (!FD_ISSET(i, &rfds))
+ *                     continue; // no data
+ *
+ *                 // read buffer
+ *                 buf_len = read(cl->fd, buf, sizeof(buf));
+ *                 if (buf_len == 0) { // closed?
+ *                     telnet_free(cl->ts);
+ *                     cl->ts = NULL;
+ *                     close(cl->fd);
+ *                     cl->fd = 0;
+ *                     continue;
+ *                 }
+ *
+ *                 // process TELNET codes
+ *                 telnet_begin(cl->ts, buf_len, buf);
+ *                 while (telnet_continue(cl->ts)) {
+ *                     const char *text;
+ *                     size_t text_len = 123;
+ *                     if (telnet_gettext(cl->ts, &text_len, &text)) {
+ *                         printf("[%d] len=%d text=\"%.*s\"\n", cl->fd, (int)text_len, (int)text_len, text);
+ *                         // TODO: implement something interesting...
+ *                     }
+ *                     unsigned char command, option;
+ *                     const unsigned char *extra;
+ *                     size_t extra_len;
+ *                     if (telnet_getcontrol(cl->ts, &command, &option, &extra_len, &extra)) {
+ *                         printf("[%d] command=%u option=%u len=%d\n", cl->fd, command, option, (int)extra_len);
+ *                         // TODO: implement something interesting...
+ *                     }
+ *                 }
+ *
+ *                 telnet_end(cl->ts);
+ *             }
+ *         }
+ *     }
+ *
+ *     return 0;
+ * }
  */
 /* References & Further Reading:
  * RFC 854 - Telnet Protocol Specification
@@ -57,6 +199,7 @@
 #include <stddef.h>
 
 struct telnet_info;
+/* extra_max controls buffer for Subnegotiation */
 struct telnet_info *telnet_create(size_t extra_max);
 int telnet_begin(struct telnet_info *ts, size_t inbuf_len, const char *inbuf);
 int telnet_gettext(struct telnet_info *ts, size_t *len, const char **ptr);
@@ -66,7 +209,6 @@ int telnet_end(struct telnet_info *ts);
 void telnet_free(struct telnet_info *ts);
 
 #ifdef JDM_TELNET_IMPLEMENTATION
-#define NDEBUG
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,22 +218,14 @@ void telnet_free(struct telnet_info *ts);
 
 #include <arpa/telnet.h>
 
-enum telnet_event_type {
-    TelnetEventText,
-    TelnetEventControl
-};
-
 enum telnet_state {
+    TelnetStateError,           /* some error occurred and we cannot proceed */
     TelnetStateText,
     TelnetStateIacIac,          /* IAC escape */
     TelnetStateIacCommand,      /* WILL WONT DO DONT ... */
     TelnetStateIacOption,       /* TELOPT_xxx */
     TelnetStateSb,              /* SB ... */
-    TelnetStateSbIac            /* IAC inside Sb */
-};
-
-struct telnet_event {
-    enum telnet_event_type type;
+    TelnetStateSbIac,           /* IAC inside Sb */
 };
 
 struct telnet_info {
@@ -111,13 +245,14 @@ struct telnet_info {
 struct telnet_info *telnet_create(size_t extra_max) {
     struct telnet_info *ret;
     /* if extra_max is 0 pick a reasonable size */
-    if(!extra_max) extra_max=16;
+    if(!extra_max) extra_max=48;
     ret=malloc(sizeof *ret + extra_max);
     ret->telnet_state=TelnetStateText;
     ret->extra_len=0;
     ret->extra_max=extra_max;
     ret->inbuf_len=0;
     ret->inbuf_current=0;
+    ret->inbuf=NULL;
     return ret;
 }
 
@@ -131,7 +266,7 @@ int telnet_begin(struct telnet_info *ts, size_t inbuf_len, const char *inbuf) {
     return 1;
 }
 
-#ifndef NDEBUG
+#ifdef JDM_TELNET_DEBUG
 static void hexdump(int n, const unsigned char *d) {
     int i;
     for(i=0;i<n;i++) fprintf(stderr, " %02X", d[i]);
@@ -146,15 +281,18 @@ int telnet_gettext(struct telnet_info *ts, size_t *len, const char **ptr) {
     size_t current, newlen;
 
     assert(ts != NULL);
+    assert(ts->inbuf != NULL);
     assert(ptr != NULL);
     assert(len != NULL);
 
-    if(ts->inbuf_current>=ts->inbuf_len) {
+    if(ts->telnet_state == TelnetStateError || (ts->inbuf_current >= ts->inbuf_len)) {
         /* no more data */
         return 0;
     }
 
     switch(ts->telnet_state) {
+        case TelnetStateError:
+            return 0;
         case TelnetStateIacIac:
         case TelnetStateText:
             *ptr=(const char*)ts->inbuf+ts->inbuf_current;
@@ -169,7 +307,7 @@ int telnet_gettext(struct telnet_info *ts, size_t *len, const char **ptr) {
             for(;current<ts->inbuf_len;current++,newlen++) {
                     if(ts->inbuf[current]==IAC) {
                         ts->telnet_state=TelnetStateIacCommand;
-#ifndef NDEBUG
+#ifdef JDM_TELNET_DEBUG
                         fprintf(stderr, "command: ");
                         hexdump(8, &ts->inbuf[current]);
                         fprintf(stderr, "\n");
@@ -178,11 +316,12 @@ int telnet_gettext(struct telnet_info *ts, size_t *len, const char **ptr) {
                         break;
                     }
             }
-#ifndef NDEBUG
-            fprintf(stderr, "curr: %d %d len: %d\n", current, ts->inbuf_current, ts->inbuf_len);
+#ifdef JDM_TELNET_DEBUG
+            fprintf(stderr, "curr: %d len: %d inbuf: %d %d\n",
+                        (int)current, (int)newlen,
+                        (int)ts->inbuf_current, (int)ts->inbuf_len);
 #endif
             *len=newlen;
-            assert(*len >= 0);
             ts->inbuf_current=current;
             return 1;
         case TelnetStateIacCommand:
@@ -192,7 +331,8 @@ int telnet_gettext(struct telnet_info *ts, size_t *len, const char **ptr) {
             return 0;
     }
     fprintf(stderr, "Invalid telnet state %d in %p\n", ts->telnet_state, (void*)ts);
-    abort();
+    ts->telnet_state=TelnetStateError;
+    return 0;
 }
 
 /* get the next control item from the telnet engine.
@@ -204,17 +344,25 @@ int telnet_gettext(struct telnet_info *ts, size_t *len, const char **ptr) {
  */
 int telnet_getcontrol(struct telnet_info *ts, unsigned char *command, unsigned char *option, size_t *extra_len, const  unsigned char **extra) {
     unsigned char tmp;
+
+    assert(ts != NULL);
+    assert(ts->inbuf != NULL);
+    assert(command != NULL);
+    assert(option != NULL);
+
 again:
-    if(ts->inbuf_current>=ts->inbuf_len) {
+    if(ts->telnet_state == TelnetStateError || (ts->inbuf_current >= ts->inbuf_len)) {
         /* no more data */
         return 0;
     }
 
     switch(ts->telnet_state) {
+        case TelnetStateError:
+            return 0;
         case TelnetStateIacCommand:
             /* look for command parameter to IAC */
             tmp=(unsigned char)ts->inbuf[ts->inbuf_current];
-#ifndef NDEBUG
+#ifdef JDM_TELNET_DEBUG
             fprintf(stderr, "IAC %s\n", TELCMD(tmp));
 #endif
             switch(tmp) {
@@ -287,13 +435,13 @@ again:
                     /* this is an error in this state. we ignore it */
                     ts->telnet_state=TelnetStateText;
                     ts->inbuf_current++; /* swallow the sequence code */
-#ifndef NDEBUG
+#ifdef JDM_TELNET_DEBUG
                     fprintf(stderr, "Found IAC SE in outside of SB stream, ignoring it.\n");
 #endif
                     goto again;
                 default: /* treat anything we don't know as a 2 byte code */
                     /* the following is for 2-byte IAC <cmd> codes */
-#ifndef NDEBUG
+#ifdef JDM_TELNET_DEBUG
                     fprintf(stderr, "unknown code %u\n", tmp);
 #endif
                     ts->command=tmp;
@@ -358,15 +506,14 @@ again:
             /* nothing to get */
             return 0;
     }
-#ifndef NDEBUG
-    fprintf(stderr, "fell through state %u\n", ts->telnet_state);
-#endif
-    abort();
+    fprintf(stderr, "Invalid telnet state %d in %p\n", ts->telnet_state, (void*)ts);
+    ts->telnet_state=TelnetStateError;
+    return 0;
 }
 
 /* returns true while telnet_getXXX() can still be called */
 int telnet_continue(struct telnet_info *ts) {
-    return ts->inbuf_current < ts->inbuf_len;
+    return ts->telnet_state == TelnetStateError || (ts->inbuf_current < ts->inbuf_len);
 }
 
 /* finishes an update cycle. the buffer passed as telnet_begin is no longer
@@ -379,7 +526,7 @@ int telnet_end(struct telnet_info *ts) {
 
     /* check that the buffer was completely consumed */
     if(ts->inbuf_current<ts->inbuf_len) {
-#ifndef NDEBUG
+#ifdef JDM_TELNET_DEBUG
         fprintf(stderr, "Unconsumed data!\n");
 #endif
         result=0;

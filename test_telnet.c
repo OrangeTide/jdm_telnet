@@ -1,6 +1,7 @@
 /**************************** TEST & EXAMPLE CODE ****************************/
 
 #define JDM_TELNET_IMPLEMENTATION
+#define JDM_TELNET_DEBUG
 #include "jdm_telnet.h"
 
 /* USAGE:
@@ -50,7 +51,7 @@ int main() {
             if(telnet_gettext(ts, &text_len, &text_ptr)) {
                 /* Dump all normal text to stdout */
 #ifndef NDEBUG
-                fprintf(stderr, "text_len=%d\n", text_len);
+                fprintf(stderr, "text_len=%d\n", (int)text_len);
 #endif
                 if(fwrite(text_ptr, 1, text_len, stdout)!=text_len) {
                     perror("fwrite()");
